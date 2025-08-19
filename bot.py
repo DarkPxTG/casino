@@ -2,13 +2,10 @@ import os
 import asyncio
 import logging
 import random
+from datetime import datetime, timedelta
+
 from dotenv import load_dotenv
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    LabeledPrice
-)
+from telegram import Update, LabeledPrice, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -25,17 +22,17 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 if not BOT_TOKEN:
-    raise SystemExit("API_TOKEN is not set in .env")
+    raise SystemExit("BOT_TOKEN is not set in .env")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ---------------- Data Stores ----------------
-USER_PAYMENTS = {}        # user_id -> total stars
-user_tracking = {}        # user_id -> gift tracking
-transfer_pending = {}     # user_id -> transfer info {to_id, amount, fee, charge_id}
+# ---------------- Data ----------------
+USER_PAYMENTS = {}       # user_id -> total stars
+USER_SUBSCRIPTIONS = {}  # user_id -> subscription expiration datetime
+transfer_pending = {}    # user_id -> {"to_id": .., "amount": .., "fee": ..}
 
-# ---------------- Prizes ----------------
+# ---------------- Gifts ----------------
 prizes = [
     ("🧸 تدی", 0.3),
     ("❤️ قلب", 0.3),
@@ -44,31 +41,31 @@ prizes = [
 ]
 
 # ---------------- Handlers ----------------
-
-# Start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("🎰 شروع گردونه — 1 ⭐", callback_data="roll_gift")],
-        [InlineKeyboardButton("💸 انتقال استارز", callback_data="transfer_star")]
+        [InlineKeyboardButton("🎰 گردونه 1 ⭐", callback_data="roll_gift")],
+        [InlineKeyboardButton("💸 انتقال استارز", callback_data="transfer_star")],
+        [InlineKeyboardButton("📦 خرید اشتراک 1 ماهه — 1 ⭐", callback_data="buy_subscription")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "🎰 خوش اومدی! برای شرکت در گردونه ابتدا ۱ ستارز پرداخت کنید یا استارز خود را انتقال دهید.",
+        "🎰 خوش آمدی! می‌تونی گردونه بزنی، استارز منتقل کنی یا اشتراک بخری.",
         reply_markup=reply_markup
     )
 
-# دکمه‌ها
+# ---------------- دکمه‌ها ----------------
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    user_id = query.from_user.id
 
     if query.data == "roll_gift":
         prices = [LabeledPrice("گردونه 1 ⭐", 1)]
         await context.bot.send_invoice(
-            chat_id=query.from_user.id,
+            chat_id=user_id,
             title="🎰 گردونه ستاره‌ای",
             description="پرداخت ۱ ستارز برای شرکت در گردونه",
-            payload=f"roll:{query.from_user.id}:{random.randint(1000000000, 9999999999)}",
+            payload=f"roll:{user_id}",
             provider_token="",  # ستاره واقعی
             currency="XTR",
             prices=prices,
@@ -77,14 +74,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == "transfer_star":
         await query.message.reply_text(
-            "💸 برای انتقال، ابتدا UserID مقصد و مقدار را وارد کنید:\n"
-            "`<USER_ID> <مقدار>`\n"
-            "مثال: `123456789 10`",
+            "💸 برای انتقال، UserID مقصد و مقدار را وارد کنید:\n`<USER_ID> <مقدار>`\nمثال: `123456789 10`",
             parse_mode="Markdown"
         )
         context.user_data["await_transfer"] = True
 
-# دریافت مقدار انتقال
+    elif query.data == "buy_subscription":
+        prices = [LabeledPrice("اشتراک 1 ماهه سیگنال", 1)]
+        await context.bot.send_invoice(
+            chat_id=user_id,
+            title="اشتراک سیگنال ارز دیجیتال",
+            description="اشتراک ۱ ماهه ربات سیگنال ارز دیجیتال",
+            payload=f"subscription:{user_id}",
+            provider_token="",  # ستاره واقعی
+            currency="XTR",
+            prices=prices,
+            start_parameter="subscription_start"
+        )
+
+# ---------------- دریافت مقدار انتقال ----------------
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("await_transfer"):
         try:
@@ -99,21 +107,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             fee = 0 if amount < 5 else 3
             final_amount = amount - fee
-
-            charge_id = str(random.randint(1000000000, 9999999999))
-            transfer_pending[update.effective_user.id] = {
-                "to_id": to_id,
-                "amount": final_amount,
-                "fee": fee,
-                "charge_id": charge_id
-            }
+            transfer_pending[update.effective_user.id] = {"to_id": to_id, "amount": final_amount, "fee": fee}
 
             prices = [LabeledPrice(f"انتقال {final_amount} ⭐", amount)]
             await context.bot.send_invoice(
                 chat_id=update.effective_user.id,
                 title="💸 انتقال استارز",
                 description=f"انتقال {final_amount} ⭐ به {to_id} (کارمزد {fee} ⭐)",
-                payload=f"transfer:{update.effective_user.id}:{to_id}:{final_amount}:{charge_id}",
+                payload=f"transfer:{update.effective_user.id}:{to_id}:{final_amount}",
                 provider_token="",  # ستاره واقعی
                 currency="XTR",
                 prices=prices,
@@ -121,87 +122,78 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             context.user_data["await_transfer"] = False
-
         except Exception:
             await update.message.reply_text("❌ فرمت صحیح نیست. دوباره تلاش کنید.")
 
-# Precheckout
+# ---------------- Precheckout ----------------
 async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.pre_checkout_query
     await query.answer(ok=True)
 
-# پرداخت موفق
+# ---------------- پرداخت موفق ----------------
 async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     payment = update.message.successful_payment
     payload = payment.invoice_payload
     user_id = update.effective_user.id
 
+    # گردونه
     if payload.startswith("roll:"):
-        parts = payload.split(":")
-        tracking_code = parts[2]
         USER_PAYMENTS[user_id] = USER_PAYMENTS.get(user_id, 0) + 1
         final_gift = random.choices([p[0] for p in prizes], weights=[p[1] for p in prizes])[0]
-        user_tracking[user_id] = {"tracking_code": tracking_code, "gift": final_gift, "status": "pending"}
-
-        msg = await update.message.reply_text("🎰 گردونه در حال چرخش است...")
-        for i in range(5):
-            rolling = random.sample([p[0] for p in prizes], len(prizes))
-            await msg.edit_text(" | ".join(rolling))
-            await asyncio.sleep(0.7 + i*0.2)
-        await msg.edit_text(f"🎉 تبریک! برنده شدید:\n\n{final_gift}\n\nکد پیگیری: {tracking_code}")
-
+        tracking_code = str(random.randint(1000000000, 9999999999))
+        await update.message.reply_text(f"🎉 برنده شدید: {final_gift}\nکد پیگیری: {tracking_code}")
         await context.bot.send_message(
             chat_id=ADMIN_ID,
             text=f"📥 کاربر {update.message.from_user.username} برنده شد!\nجایزه: {final_gift}\nکد پیگیری: {tracking_code}"
         )
 
+    # انتقال
     elif payload.startswith("transfer:"):
         parts = payload.split(":")
         from_id = int(parts[1])
         to_id = int(parts[2])
         amount = int(parts[3])
-        charge_id = parts[4]
-
-        # اضافه کردن به حساب مقصد
         USER_PAYMENTS[to_id] = USER_PAYMENTS.get(to_id, 0) + amount
 
-        # ذخیره charge_id برای ریفاند
-        transfer_pending[from_id]["charge_id"] = charge_id
-
-        await update.message.reply_text(
-            f"✅ انتقال موفق! {amount} ⭐ به {to_id} اضافه شد."
+        await update.message.reply_text(f"✅ انتقال موفق! {amount} ⭐ به {to_id} اضافه شد.")
+        await context.bot.send_message(
+            chat_id=to_id,
+            text=f"🎉 شما {amount} ⭐ از طرف {update.message.from_user.username} دریافت کردید!"
         )
 
-# ---------------- ریفاند واقعی ----------------
+    # اشتراک
+    elif payload.startswith("subscription:"):
+        USER_SUBSCRIPTIONS[user_id] = datetime.now() + timedelta(days=30)
+        USER_PAYMENTS[user_id] = USER_PAYMENTS.get(user_id, 0) + payment.total_amount
+        await update.message.reply_text(
+            f"✅ اشتراک یک ماهه فعال شد!\n"
+            f"برای ریفاند: /refund {payment.telegram_payment_charge_id}\n"
+            f"تاریخ انقضا: {USER_SUBSCRIPTIONS[user_id]}"
+        )
+
+# ---------------- ریفاند ----------------
 async def refund_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("لطفا توکن پرداخت را وارد کنید:\n/refund <PAYMENT_TOKEN>")
         return
 
-    charge_id = context.args[0]
-    user_id = update.effective_user.id
+    try:
+        charge_id = context.args[0]
+        user_id = update.effective_user.id
 
-    refunded = False
+        success = await context.bot.refund_star_payment(
+            user_id=user_id,
+            telegram_payment_charge_id=charge_id
+        )
 
-    # بررسی انتقال‌های pending
-    for uid, transfer in list(transfer_pending.items()):
-        if transfer.get("charge_id") == charge_id and uid == user_id:
-            USER_PAYMENTS[user_id] = USER_PAYMENTS.get(user_id, 0) + transfer["amount"]
-            del transfer_pending[uid]
-            refunded = True
-            break
-
-    # بررسی گردونه‌ها
-    if not refunded:
-        if user_tracking.get(user_id) and user_tracking[user_id].get("tracking_code") == charge_id:
-            USER_PAYMENTS[user_id] = USER_PAYMENTS.get(user_id, 0) + 1  # بازگشت ۱ ستاره
-            user_tracking[user_id]["status"] = "refunded"
-            refunded = True
-
-    if refunded:
-        await update.message.reply_text("✅ بازپرداخت موفق بود! ستاره‌ها دوباره به حساب شما اضافه شد.")
-    else:
-        await update.message.reply_text("❌ توکن نامعتبر است یا قبلاً بازپرداخت انجام شده.")
+        if success:
+            await update.message.reply_text("✅ بازپرداخت موفق بود!")
+            if user_id in USER_SUBSCRIPTIONS:
+                del USER_SUBSCRIPTIONS[user_id]
+        else:
+            await update.message.reply_text("❌ بازپرداخت موفق نبود. توکن صحیح باشد یا قبلاً بازپرداخت انجام شده.")
+    except Exception as e:
+        await update.message.reply_text(f"خطا در ریفاند: {e}")
 
 # ---------------- Main ----------------
 def main():
