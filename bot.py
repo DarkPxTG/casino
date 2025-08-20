@@ -10,9 +10,16 @@ api_id = int(os.getenv("API_ID"))
 api_hash = os.getenv("API_HASH")
 session = os.getenv("SESSION_NAME", "selfbot")
 
-target_group = int(os.getenv("TARGET_GROUP"))
-forward_from = int(os.getenv("FORWARD_FROM"))
-forward_to = int(os.getenv("FORWARD_TO"))
+# اختیاری‌ها
+tg = os.getenv("TARGET_GROUP")
+target_group = int(tg) if tg else None
+
+ff = os.getenv("FORWARD_FROM")
+forward_from = int(ff) if ff else None
+
+ft = os.getenv("FORWARD_TO")
+forward_to = int(ft) if ft else None
+
 media_save_path = os.getenv("MEDIA_SAVE_PATH", "downloads")
 
 app = Client(session, api_id=api_id, api_hash=api_hash)
@@ -99,6 +106,8 @@ auto_spam_on = False
 @app.on_message(filters.me & filters.command("autospam", prefixes="/"))
 async def start_autospam(_, msg):
     global auto_spam_on
+    if not target_group:
+        return await msg.edit("❌ TARGET_GROUP تو .env تنظیم نشده!")
     auto_spam_on = True
     await msg.edit("♻️ اسپم خودکار فعال شد.")
 
@@ -126,6 +135,8 @@ async def save_media(_, msg):
 # ========== فوروارد خودکار ==========
 @app.on_message(filters.chat(forward_from))
 async def forward_auto(_, msg):
+    if not forward_to:
+        return
     await msg.copy(forward_to)
 
 # ========== زمان‌بندی پیام ==========
